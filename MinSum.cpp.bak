@@ -1,0 +1,84 @@
+#include"MS.h"
+int main()
+{
+	FILE *fp,*fp1;
+	int i,j;
+	int Hn,Hm;
+	double SNR;
+	double FER;
+	double BER;
+	double MaxSNR;
+	SNR = 2.0;
+	MaxSNR = 4.0;
+	fp1 = fopen("result.txt","w+");
+	fprintf(fp1,"SNR  FER  BER  per_SNR_iter\n");
+	fflush(fp1);
+
+	srand(time(NULL));//seed
+	printf("-------------beginning--------------\n");
+	//fp = fopen("popHFileAlist.txt","r");
+	fp = fopen("1296-648-48-alist.txt","r");
+	read_H_matrix(fp);
+	creat_para();
+	srand(time(NULL));//seed
+	while(SNR<=MaxSNR)
+	{
+		TotalBits = 0L;
+		ErrorBits = 0L;
+		TotalFrames = 0L;
+		ErrorFrames = 0L;
+		FER = 0.0;
+		int perErrorBits;
+		int iters = 0;
+		//while (TotalFrames < MaxTransFrames && ErrorFrames < MaxErrorFrames)
+		while (ErrorFrames < MaxErrorFrames)
+		{
+			TotalBits += CODELEN;	
+			TotalFrames++;
+			//printf("totalframes:%d\n",TotalFrames);
+			perErrorBits = 0;
+			//根据SNR 计算标准差  snr=10log10(1/2Rs^2) R--code rate码率 s--standard deviation标准差
+			stdev = sqrt(1.0 / (2 * CODERATE*pow(10., SNR / 10.0)));  //sqrt(-2.0*SIGMA*SIGMA*log(s)/s);
+			//发送全零码字
+			send_code(stdev);
+			iters += MS_decode(stdev);
+			//printf("iters is %d\n", iters);
+
+			for (i = 0; i < CODELEN; i++)
+			{
+				if (decode[i] != 0)
+				{
+					perErrorBits++;
+				}
+			}
+			if (TotalFrames % 10000 == 0)
+				printf("totalframes:%d\n", TotalFrames);
+			if (perErrorBits > 0)
+			{
+				ErrorFrames++;
+				ErrorBits += perErrorBits;
+				printf("错误帧数: %d ; 总帧数: %d ; 单帧错误比特数 %d ;\n", ErrorFrames, TotalFrames, perErrorBits);
+			}
+		}
+		//bit error rate/frame error rate
+		BER = (1.0*ErrorBits) / TotalBits;
+		FER = (1.0*ErrorFrames) / TotalFrames;
+		printf("SNR: %f,  BER: %g,  FER: %g\n", SNR, BER, FER);
+		//平均迭代次数
+		double per_SNR_iter = (double)iters / (double)TotalFrames;
+		printf("average number of iters is %g\n", per_SNR_iter);
+		fprintf(fp1,"%lf %g %g %lf\n",SNR,FER,BER,per_SNR_iter);
+		fflush(fp1);
+		SNR+=0.2;
+	}
+
+
+
+	delete_para();
+
+	printf("-------------ending--------------\n");
+	return 0;
+}
+
+
+

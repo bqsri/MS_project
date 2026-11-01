@@ -1,0 +1,394 @@
+//MinSum Decoding 
+#include <stdio.h>
+#include <time.h>
+#include <stdlib.h>
+#include <math.h>
+#include "Gaussian.h"
+
+/*=============================变量定义==============================*/
+double SNR;
+#define MaxIter 50
+int CODELEN; //码长 
+int PARITYLEN; //
+double CODERATE;//码率
+int popNum,popSize;
+
+/*============================BER//FER=========================*/
+//bit error rate/frame error rate
+int MaxTransFrames = 1000000000000000; //最大传输帧数  10000L
+int TotalBits; //传输的总比特数
+int ErrorBits; //错误的比特数量
+int TotalFrames; //传输的总frame
+int ErrorFrames; //错误的frame
+int MaxErrorFrames = 50;//译码错误最大数
+double BER; //误比特率
+double FER; //误侦率
+double stdev; //标准差
+
+/*============================十字链表H矩阵=========================*/
+typedef struct pnode{
+	int col;
+	int row;
+	pnode *right, *left, *up, *down;
+	//double* q_mn;//由变量节点传递给校验节点的信息，每一个m，n对应有q个取值
+	//double* r_mn;//由校验节点传递给变量节点的信息，每一个m，n对应有q个取值
+}pnode, *plist;
+typedef struct crosslist{
+	plist* right;//横向
+	plist* down;//纵向
+}crosslist;
+int *pColDegree;//与信息节点相连的校验节点的度数=>列重量
+int *pRowDegree;//与校验节点相连的信息节点的度数=>行重量
+int maxColDegree;//最大列重量dv
+int maxRowDegree;//最大行重量dc
+crosslist *H;//H十字链表矩阵
+
+/*=============================消息变量===============================*/
+double *receive;//接收到的信息
+int *decode;//硬判决结果
+double **VN_Message;//变量节点传递的消息
+double **CN_Message;//校验节点传递的消息
+double *VN_LLR;//变量节点总LLR
+
+/*=============================函数定义===============================*/
+void read_H_matrix(FILE *fp){
+	int i, j;
+	int index;
+	fscanf(fp, "%d%d", &CODELEN, &PARITYLEN);//读取第一行码长，校验位数
+	printf("%d %d\n",CODELEN,PARITYLEN);
+	fscanf(fp, "%d%d", &maxColDegree, &maxRowDegree);//第二行
+	printf("%d %d\n",maxColDegree,maxRowDegree);
+	CODERATE = 1. - (double)PARITYLEN/CODELEN;
+	//第三行
+	pColDegree = new int[CODELEN];
+	for (i = 0; i<CODELEN; i++){
+		fscanf(fp, "%d", &pColDegree[i]);
+	}
+	//第四行
+	pRowDegree = new int[PARITYLEN];
+	for (i = 0; i<PARITYLEN; i++){
+		fscanf(fp, "%d", &pRowDegree[i]);
+	}
+	//读入到十字链表中
+	pnode *p1, *p2;
+	crosslist *phead;
+	phead = new crosslist;//建立头结点
+	phead->right = new pnode*[CODELEN];//横向头指针数组
+	phead->down = new pnode*[PARITYLEN];//纵向头指针数组
+	H = phead;
+	//初始化
+	for (i = 0; i<CODELEN; i++){
+		phead->right[i] = NULL;
+	}
+	for (j = 0; j<PARITYLEN; j++){
+		phead->down[j] = NULL;
+	}
+	for (i = 0; i<CODELEN; i++){
+		for (j = 0; j<pColDegree[i]; j++){
+			fscanf(fp, "%d", &index);			
+			index = index - 1;
+			p1 = new pnode;//创建节点 初始化
+			p1->col = i;
+			p1->row = index;
+			p1->right = p1->left = p1->up = p1->down = NULL;
+			//p1->q_mn = new double[Q];
+			//p1->r_mn = new double[Q];
+			//插入节点
+			//纵向
+			p2 = phead->right[i];
+			if (p2 == NULL){
+				phead->right[i] = p1;
+				p2 = phead->right[i];
+				p2->down = NULL;
+				p2->up = NULL;
+			}
+			else{
+				while (p2->down != NULL){
+					p2 = p2->down;
+				}
+				p1->down = NULL;
+				p1->up = p2;
+				p2->down = p1;
+			}
+			//横向
+			p2 = phead->down[index];
+			if (p2 == NULL){
+				phead->down[index] = p1;
+				p2 = phead->down[index];
+				p2->left = NULL;
+				p2->right = NULL;
+			}
+			else{
+				while (p2->right != NULL){
+					p2 = p2->right;
+				}
+				p1->left = p2;
+				p1->right = NULL;
+				p2->right = p1;
+			}
+		}
+	}
+	//节点数据重复，舍弃
+	int tmp;
+	for (i = 0; i<PARITYLEN; i++){
+		for (j = 0; j<pRowDegree[i]; j++){
+			fscanf(fp, "%d", &tmp);
+		}
+	}
+}
+void send_code(double stdev)
+{
+	int i;
+	//为了方便，假设发送的码字为全零码字，AWGN信道，BPSK调制。
+	for(i = 0;i < CODELEN;i++)
+	{
+		receive[i] = 1 + stdev*Gaussian();  //0->1
+	}
+	for (i = 0;i < CODELEN;i++)
+	{
+		receive[i] = (2.0 * receive[i])/(stdev * stdev);//对数似然比
+	}
+	//for(i = 0;i < CODELEN;i++)
+		//printf("%d  %lf\n",i,receive[i]);
+}
+void MinSum_initialization()
+{
+	int i,j;
+	for(i = 0;i < CODELEN;i++)
+	{
+		for(j = 0;j < PARITYLEN;j++)
+		{
+			CN_Message[j][i] = 0;           
+			VN_Message[j][i] = receive[i];            
+		}		
+	}
+	/*
+	for(i = 0;i < CODELEN;i++)
+	{
+		for(j = 0;j < PARITYLEN;j++)
+		{
+			printf("CN %d %d %lf\n",j,i,CN_Message[j][i]);  
+			printf("VN %d %d %lf\n",j,i,VN_Message[j][i]);           
+		}		
+	}
+	*/
+}
+void CN_to_VN_update()
+{
+	int i,j;
+	double CN_temp;
+	double sign_temp;
+	pnode *p1,*p2;
+	for(i = 0; i < PARITYLEN; i++)
+	{
+		p1 = H->down[i];
+		while(p1 != NULL)
+		{
+			CN_temp = 32576.0;//init max
+			sign_temp = 1.0;//init >0
+			p2 = H->down[i];
+			while(p2 != NULL)
+			{
+				if(p1 == p2)
+					p2 = p2->right;
+				else
+				{
+					//sign
+					if(VN_Message[i][p2->col]<0)
+					{
+						sign_temp*=(-1.0);
+					}
+					//if(VN_Message[i][p2->col]<0)
+					else
+					{
+						sign_temp*=1.0;
+					}
+					//compare value
+					if(CN_temp>fabs(VN_Message[i][p2->col]))
+					{
+						CN_temp = fabs(VN_Message[i][p2->col]);
+					}
+					p2 = p2->right;
+				}
+				CN_Message[i][p1->col] = sign_temp*CN_temp;
+			}
+			p1 = p1->right;
+		}
+	}
+}
+void VN_to_CN_update()
+{
+	int i;
+	double VN_temp;
+	pnode *p1,*p2;
+	//printf("test1\n");
+	for(i = 0; i < CODELEN; i++)
+	{
+		p1 = H->right[i];
+		while(p1 != NULL)
+		{
+			VN_temp = 0;
+			p2 = H->right[i];
+			while(p2 != NULL)
+			{
+				if(p1 == p2)
+					p2 = p2->down;
+				else
+				{
+					VN_temp += CN_Message[p2->row][i];
+					p2 = p2->down;
+				}
+			}
+			VN_Message[p1->row][i] = VN_temp + receive[i];
+			p1 = p1->down;		
+		}
+	}
+}
+void MinSum_decision()
+{
+	int i;
+	pnode *p1;
+	for(i = 0; i < CODELEN; i++)
+	{
+		//printf("%d test1\n",i);
+		//!!!!!注意此处VN_LLR[i]和decode[i]应该为0
+		VN_LLR[i] = 0;
+		decode[i] = 0;
+		p1 = H->right[i];
+		while(p1 != NULL)
+		{
+			VN_LLR[i] += CN_Message[p1->row][i];
+			p1 = p1->down;
+		}
+		VN_LLR[i] += receive[i];
+		if(VN_LLR[i] > 0)
+			decode[i] = 0;
+		else
+			decode[i] = 1;
+	}
+}
+bool MinSum_decode_check()
+{
+	int i;
+	pnode *p1;
+	for (i = 0; i < PARITYLEN; i++)
+	{
+		int check = 0;
+		p1 = H->down[i];
+		while (p1 != NULL){
+			check += decode[p1->col];
+			p1 = p1->right;
+		}
+		check = check % 2;
+		if (check != 0){   //说明第i行不满足校验
+			return false;
+		}
+	}
+	return true;
+}
+int MinSum_decode(double stdev)
+{
+	int iter = 1;
+	//初始化
+	MinSum_initialization();
+	//迭代译码
+	while (iter <= MaxIter){
+		//update cn to vn
+		CN_to_VN_update();
+		MinSum_decision();		
+		if (MinSum_decode_check() ){   //进行Hx=0的判断
+			return iter;
+		}		
+		else
+		{
+			//update vn to cn
+			VN_to_CN_update();
+			iter++;
+		}
+	}
+	return MaxIter;
+}
+void creat_para()
+{
+	int i;
+	receive = new double[CODELEN];
+	decode = new int[CODELEN];
+	VN_LLR = new double[CODELEN];
+	VN_Message = new double * [PARITYLEN];
+	CN_Message = new double * [PARITYLEN];
+	for(i = 0;i < PARITYLEN;i++)
+	{
+		VN_Message[i] = new double[CODELEN];
+		CN_Message[i] = new double[CODELEN];
+	}
+}
+void delete_para()
+{
+	int i;
+	delete []receive;
+	delete []decode;
+	delete []VN_LLR;
+	for(i = 0;i < PARITYLEN;i++)
+	{
+		delete []VN_Message[i];
+		delete []CN_Message[i];
+	}
+	delete []VN_Message;
+	delete []CN_Message;
+}
+/*
+void SumProduct_main(FILE *fp,double *HFERBER)
+{
+	int i;
+	read_H_matrix(fp);
+	creat_para();
+	srand(time(NULL));//seed
+	TotalBits = 0L;
+	ErrorBits = 0L;
+	TotalFrames = 0L;
+	ErrorFrames = 0L;
+	FER = 0.0;
+	int perErrorBits;
+	int iters = 0;
+	//while (TotalFrames < MaxTransFrames && ErrorFrames < MaxErrorFrames)
+	while (ErrorFrames < MaxErrorFrames)
+	{
+		TotalBits += CODELEN;	
+		TotalFrames++;
+		//printf("totalframes:%d\n",TotalFrames);
+		perErrorBits = 0;
+		//根据SNR 计算标准差  snr=10log10(1/2Rs^2) R--code rate码率 s--standard deviation标准差
+		stdev = sqrt(1.0 / (2 * CODERATE*pow(10., SNR / 10.0)));  //sqrt(-2.0*SIGMA*SIGMA*log(s)/s);
+		//发送全零码字
+		send_code(stdev);
+		iters += SumProduct_decode(stdev);
+		//printf("iters is %d\n", iters);
+
+		for (i = 0; i < CODELEN; i++)
+		{
+			if (decode[i] != 0)
+			{
+				perErrorBits++;
+			}
+		}
+		if (TotalFrames % 10000 == 0)
+			printf("totalframes:%d\n", TotalFrames);
+		if (perErrorBits > 0)
+		{
+			ErrorFrames++;
+			ErrorBits += perErrorBits;
+			//printf("错误帧数: %d ; 总帧数: %d ; 单帧错误比特数 %d ;\n", ErrorFrames, TotalFrames, perErrorBits);
+		}
+	}
+	//bit error rate/frame error rate
+	BER = (1.0*ErrorBits) / TotalBits;
+	FER = (1.0*ErrorFrames) / TotalFrames;
+	//printf("SNR: %f,  BER: %.14f,  FER: %.12f\n", SNR, BER, FER);
+	//平均迭代次数
+	double per_SNR_iter = (double)iters / (double)TotalFrames;
+	//printf("average number of iters is %.1f\n", per_SNR_iter);
+	delete_para();
+	HFERBER[0] = FER;
+	HFERBER[1] = BER;
+}
+*/
